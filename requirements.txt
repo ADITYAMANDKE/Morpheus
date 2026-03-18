@@ -1,0 +1,17 @@
+# OrchestraLLM Requirements
+# Python >= 3.10
+
+# Core ML
+torch>=2.1.0
+transformers>=4.40.0
+sentence-transformers>=2.6.0
+datasets>=2.18.0
+accelerate>=0.27.0
+
+# LLM API
+anthropic>=0.25.0
+
+# Utilities
+pyyaml>=6.0
+tqdm>=4.66.0
+numpy>=1.26.0

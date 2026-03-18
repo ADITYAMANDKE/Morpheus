@@ -1,0 +1,31 @@
+# ─── Data (too large / reproducible) ──────────────────────────────────────────
+data/
+*.jsonl
+
+# ─── Model checkpoints (3GB+) ────────────────────────────────────────────────
+models/
+*.pt
+*.bin
+*.safetensors
+checkpoint-*/
+
+# ─── Results (generated outputs) ──────────────────────────────────────────────
+results/
+
+# ─── Python ───────────────────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.env
+.venv/
+venv/
+
+# ─── Jupyter / Colab ─────────────────────────────────────────────────────────
+.ipynb_checkpoints/
+
+# ─── OS ───────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db

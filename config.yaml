@@ -1,0 +1,76 @@
+# OrchestraLLM Configuration
+# Paper: "OrchestraLLM: Efficient Orchestration of Language Models for Dialogue State Tracking"
+
+# ─── Paths ────────────────────────────────────────────────────────────────────
+# NOTE: When running on Colab, these paths are overwritten at runtime by the
+# notebook cell that points them to Google Drive for persistence.
+paths:
+  data_dir: "./data/multiwoz"          # Raw MultiWOZ 2.4 JSON files
+  processed_dir: "./data/processed"    # Preprocessed tensors / jsonl
+  model_dir: "./models/prompt_dst"     # Saved FLAN-T5 checkpoints
+  expert_pool_dir: "./data/expert_pools"
+  results_dir: "./results"
+
+# ─── Data ─────────────────────────────────────────────────────────────────────
+data:
+  dataset: "multiwoz"                  # "multiwoz" | "sgd"
+  multiwoz_version: "2.4"
+  few_shot_ratio: 0.05                 # 5% of official training data (paper setting)
+  holdout_dialogues: 100               # Dialogues from val set for expert pool construction
+  domains:
+    - hotel
+    - restaurant
+    - attraction
+    - train
+    - taxi
+    - hospital
+    - police
+
+# ─── Prompt-DST (SLM) ─────────────────────────────────────────────────────────
+prompt_dst:
+  backbone: "google/flan-t5-large"     # Upgraded from T5-base in paper
+  max_input_length: 1024
+  max_output_length: 256
+  batch_size: 2                        # Reduced for T4 GPU (15GB); increase if more VRAM
+  eval_batch_size: 4                   # Reduced for T4 GPU
+  learning_rate: 5.0e-4
+  weight_decay: 0.01
+  warmup_ratio: 0.1
+  num_epochs: 10
+  gradient_accumulation_steps: 16      # Effective batch = 2 × 16 = 32
+  bf16: true                           # Safe on ≤16GB GPU
+  save_best_metric: "tlb_jga"
+  early_stopping_patience: 3
+
+# ─── IC-DST (LLM) ─────────────────────────────────────────────────────────────
+ic_dst:
+  provider: "anthropic"                # "anthropic" | "openai"
+  model: "claude-haiku-4-5-20251001"   # Fast + cheap for inference
+  num_exemplars: 10                    # K in-context examples (paper: 10)
+  max_tokens: 512
+  temperature: 0.0                     # Greedy equivalent for structured output
+
+# ─── Router (OrchestraLLM) ────────────────────────────────────────────────────
+router:
+  retriever_backbone: "sentence-transformers/all-mpnet-base-v2"  # SenBERT
+  top_k: 10                            # Majority vote over K neighbours
+  tie_break: "slm"                     # Prefer SLM on tie (paper setting)
+
+  # Expert pool sizes
+  slm_pool_size: 100                   # Turns per expert pool (MWOZ)
+  llm_pool_size: 100
+
+  # Contrastive fine-tuning
+  supervision: "task+expert"           # "task" | "expert" | "task+expert" | "none"
+  contrastive_pairs: 25                # l positive + l negative pairs
+  contrastive_lr: 2.0e-5
+  contrastive_epochs: 5
+  contrastive_batch_size: 16
+  contrastive_temperature: 0.07
+
+# ─── Evaluation ───────────────────────────────────────────────────────────────
+evaluation:
+  metrics:
+    - "joint_goal_accuracy"            # DST JGA (accumulated states)
+    - "tlb_jga"                        # Turn-Level Belief JGA
+  report_flops: true
