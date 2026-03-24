@@ -478,13 +478,14 @@ class Retriever:
         )
 
         if save_path:
+            Path(save_path).mkdir(parents=True, exist_ok=True)
             self.model.save(save_path)
             print(f"[Retriever] Saved fine-tuned model → {save_path}")
 
     def save(self, path: str):
         """Saves retriever state (model + pool embeddings)."""
         Path(path).mkdir(parents=True, exist_ok=True)
-        self.model.save(str(Path(path) / "senbert"))
+        self.model.save(str(Path(path)))
         torch.save({
             "slm_embeddings": self.slm_embeddings,
             "llm_embeddings": self.llm_embeddings,
