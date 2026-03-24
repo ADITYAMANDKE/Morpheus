@@ -44,8 +44,8 @@ prompt_dst:
 
 # ─── IC-DST (LLM) ─────────────────────────────────────────────────────────────
 ic_dst:
-  provider: "anthropic"                # "anthropic" | "openai"
-  model: "claude-haiku-4-5-20251001"   # Fast + cheap for inference
+  provider: "google"                   # "google" (Gemini)
+  model: "gemini-2.5-flash"            # Fast + cheap for inference
   num_exemplars: 10                    # K in-context examples (paper: 10)
   max_tokens: 512
   temperature: 0.0                     # Greedy equivalent for structured output

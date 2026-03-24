@@ -9,7 +9,7 @@ datasets>=2.18.0
 accelerate>=0.27.0
 
 # LLM API
-anthropic>=0.25.0
+google-genai>=1.0.0
 
 # Utilities
 pyyaml>=6.0

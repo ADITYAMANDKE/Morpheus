@@ -34,7 +34,8 @@ import time
 from pathlib import Path
 from typing import Optional
 
-import anthropic
+from google import genai
+from google.genai import types
 import yaml
 
 from data_preprocessing import (
@@ -45,6 +46,16 @@ from data_preprocessing import (
     SCHEMA_PROMPT,
 )
 from evaluate import compute_tlb_jga, compute_dst_jga
+
+
+# ─── System Instruction ──────────────────────────────────────────────────────
+
+SYSTEM_INSTRUCTION = (
+    "You are a precise dialogue state tracking assistant. "
+    "Extract only new or changed slot values from the conversation turn. "
+    "Output ONLY the state update in the format 'slot = value | slot = value' "
+    "or '[none]' if nothing changed. Do not explain or add extra text."
+)
 
 
 # ─── Exemplar Pool ────────────────────────────────────────────────────────────
@@ -113,28 +124,33 @@ def build_ic_prompt(
     prev_dst: dict[str, str],
     agent_utt: str,
     user_utt: str,
-    exemplars_block: str,
+    exemplars_block: str = "",
     schema_prompt: str = SCHEMA_PROMPT,
 ) -> str:
     """
-    Builds the full IC-DST prompt including schema, exemplars, and test instance.
+    Builds the IC-DST prompt.
 
-    Structure (eq. 1): T + E_{1:K} + DST_{t-1} + A_{t-1} + U_t
+    When using context caching, exemplars_block should be empty (exemplars
+    are in the cache). When not using caching, the full prompt is built.
 
     Args:
         prev_dst       : Previous accumulated dialogue state.
         agent_utt      : Previous agent utterance.
         user_utt       : Current user utterance.
-        exemplars_block: Formatted few-shot exemplars string.
+        exemplars_block: Formatted few-shot exemplars string (empty if cached).
         schema_prompt  : Schema table T.
 
     Returns:
         Complete prompt string.
     """
     prev_dst_str = state_to_string(prev_dst)
-    return (
-        f"{schema_prompt}"
-        f"{exemplars_block}"
+
+    parts = []
+    if exemplars_block:
+        parts.append(schema_prompt)
+        parts.append(exemplars_block)
+    # Turn-specific content (always included)
+    parts.append(
         f"Now predict the state update for this turn:\n"
         f"  Previous state: {prev_dst_str}\n"
         f"  Agent: {agent_utt.strip()}\n"
@@ -142,31 +158,37 @@ def build_ic_prompt(
         f"  State update (new or changed slots only, format: slot = value | slot = value, "
         f"or [none] if no change):"
     )
+    return "".join(parts)
 
 
 # ─── LLM Client ───────────────────────────────────────────────────────────────
 
 class ICDST:
     """
-    IC-DST using Anthropic Claude as the LLM backbone.
+    IC-DST using Google Gemini as the LLM backbone.
 
     Supports:
         - Single-turn inference
         - Full dialogue inference with DST aggregation
         - Batch evaluation with rate-limit handling
+        - Explicit context caching for batch runs
     """
 
     def __init__(self, config: dict):
         self.config = config
         self.llm_cfg = config.get("ic_dst", {})
-        self.model = self.llm_cfg.get("model", "claude-haiku-4-5-20251001")
+        self.model = self.llm_cfg.get("model", "gemini-2.5-flash")
         self.num_exemplars = self.llm_cfg.get("num_exemplars", 10)
         self.max_tokens = self.llm_cfg.get("max_tokens", 512)
         self.temperature = self.llm_cfg.get("temperature", 0.0)
 
-        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-        self.client = anthropic.Anthropic(api_key=api_key)
+        api_key = os.environ.get("GEMINI_API_KEY", "")
+        self.client = genai.Client(api_key=api_key)
         self.exemplar_pool: Optional[ExemplarPool] = None
+
+        # Explicit context cache (populated by create_cache())
+        self.cache = None
+        self.system_instruction = SYSTEM_INSTRUCTION
 
         print(f"[IC-DST] Model: {self.model} | K={self.num_exemplars} exemplars")
 
@@ -174,43 +196,92 @@ class ICDST:
         """Initialises the exemplar pool from training/holdout examples."""
         self.exemplar_pool = ExemplarPool(examples)
 
-    def _call_llm(self, prompt: str, retries: int = 3) -> str:
+    def create_cache(self, exemplars_block: str, ttl_seconds: int = 3600):
         """
-        Calls the Anthropic API with retry logic for rate limits.
+        Creates an explicit context cache with the system instruction,
+        schema prompt, and fixed exemplar block.
+
+        This avoids resending ~2,500 tokens of identical content on every call.
+        The cache is used automatically by predict_turn() when present.
 
         Args:
-            prompt : Full prompt string.
-            retries: Number of retry attempts on rate limit errors.
+            exemplars_block: Pre-formatted exemplars string from ExemplarPool.
+            ttl_seconds    : Cache time-to-live in seconds (default: 1 hour).
+        """
+        cache_content = f"{SCHEMA_PROMPT}{exemplars_block}"
+
+        self.cache = self.client.caches.create(
+            model=self.model,
+            config=types.CreateCachedContentConfig(
+                display_name="ic_dst_exemplars",
+                system_instruction=self.system_instruction,
+                contents=[cache_content],
+                ttl=f"{ttl_seconds}s",
+            ),
+        )
+        print(f"[IC-DST] Context cache created: {self.cache.name} (TTL={ttl_seconds}s)")
+
+    def delete_cache(self):
+        """Deletes the explicit context cache if one exists."""
+        if self.cache:
+            try:
+                self.client.caches.delete(name=self.cache.name)
+                print(f"[IC-DST] Cache deleted: {self.cache.name}")
+            except Exception as e:
+                print(f"[IC-DST] Cache deletion warning: {e}")
+            self.cache = None
+
+    def _call_llm(self, prompt: str, retries: int = 3) -> str:
+        """
+        Calls the Gemini API with retry logic for errors.
+
+        When an explicit context cache exists, the prompt is sent with
+        cached_content reference (schema + exemplars are in the cache).
+        Otherwise, system instruction is sent inline.
+
+        Args:
+            prompt : Prompt string (turn-specific when cached, full otherwise).
+            retries: Number of retry attempts on errors.
 
         Returns:
             Raw LLM response text.
         """
-        system_msg = (
-            "You are a precise dialogue state tracking assistant. "
-            "Extract only new or changed slot values from the conversation turn. "
-            "Output ONLY the state update in the format 'slot = value | slot = value' "
-            "or '[none]' if nothing changed. Do not explain or add extra text."
-        )
-
         for attempt in range(retries):
             try:
-                response = self.client.messages.create(
-                    model=self.model,
-                    max_tokens=self.max_tokens,
-                    temperature=self.temperature,
-                    system=system_msg,
-                    messages=[{"role": "user", "content": prompt}],
-                )
-                return response.content[0].text.strip()
-            except anthropic.RateLimitError:
-                wait = 2 ** attempt
-                print(f"[IC-DST] Rate limit hit, waiting {wait}s...")
-                time.sleep(wait)
-            except anthropic.APIError as e:
-                print(f"[IC-DST] API error: {e}")
-                if attempt == retries - 1:
-                    raise
-                time.sleep(1)
+                if self.cache:
+                    # Use cached context: schema + exemplars are in the cache
+                    response = self.client.models.generate_content(
+                        model=self.model,
+                        contents=prompt,
+                        config=types.GenerateContentConfig(
+                            cached_content=self.cache.name,
+                            temperature=self.temperature,
+                            max_output_tokens=self.max_tokens,
+                        ),
+                    )
+                else:
+                    # No cache: send system instruction inline
+                    response = self.client.models.generate_content(
+                        model=self.model,
+                        contents=prompt,
+                        config=types.GenerateContentConfig(
+                            system_instruction=self.system_instruction,
+                            temperature=self.temperature,
+                            max_output_tokens=self.max_tokens,
+                        ),
+                    )
+                return response.text.strip()
+            except Exception as e:
+                error_str = str(e).lower()
+                if "rate" in error_str or "quota" in error_str or "429" in error_str:
+                    wait = 2 ** attempt
+                    print(f"[IC-DST] Rate limit hit, waiting {wait}s...")
+                    time.sleep(wait)
+                else:
+                    print(f"[IC-DST] API error: {e}")
+                    if attempt == retries - 1:
+                        raise
+                    time.sleep(1)
         return "[none]"
 
     def predict_turn(
@@ -223,6 +294,10 @@ class ICDST:
         """
         Predicts the TLB for a single dialogue turn.
 
+        When a context cache is active, the prompt contains only the turn-
+        specific portion (exemplars are in the cache). Otherwise the full
+        prompt including schema + exemplars is built.
+
         Args:
             prev_dst    : Previous accumulated dialogue state.
             agent_utt   : Previous agent utterance.
@@ -232,10 +307,16 @@ class ICDST:
         Returns:
             Tuple of (raw_llm_output, parsed_tlb_string).
         """
-        assert self.exemplar_pool, "Call load_exemplar_pool() first"
-        exemplars = self.exemplar_pool.sample(self.num_exemplars, exclude_id=dialogue_id)
-        exemplars_block = self.exemplar_pool.format_exemplars(exemplars)
-        prompt = build_ic_prompt(prev_dst, agent_utt, user_utt, exemplars_block)
+        if self.cache:
+            # Exemplars are in the cache — only send turn-specific content
+            prompt = build_ic_prompt(prev_dst, agent_utt, user_utt, exemplars_block="")
+        else:
+            # No cache — build full prompt with exemplars
+            assert self.exemplar_pool, "Call load_exemplar_pool() first"
+            exemplars = self.exemplar_pool.sample(self.num_exemplars, exclude_id=dialogue_id)
+            exemplars_block = self.exemplar_pool.format_exemplars(exemplars)
+            prompt = build_ic_prompt(prev_dst, agent_utt, user_utt, exemplars_block)
+
         raw = self._call_llm(prompt)
         return raw, raw  # raw IS the parsed string in this structured output setup
 
@@ -342,7 +423,7 @@ def load_config(path: str) -> dict:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="IC-DST with Claude LLM")
+    parser = argparse.ArgumentParser(description="IC-DST with Gemini LLM")
     parser.add_argument("mode", choices=["eval", "infer"])
     parser.add_argument("--config", default="./config.yaml")
     parser.add_argument("--max_dialogues", type=int, default=None,

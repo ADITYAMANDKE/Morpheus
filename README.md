@@ -2,17 +2,17 @@
 
 > **Efficient Orchestration of Language Models for Dialogue State Tracking**
 
-An implementation of the OrchestraLLM paper — a retrieval-based routing system that dynamically dispatches dialogue turns to either a fine-tuned SLM (FLAN-T5-large) or an LLM (Claude) for dialogue state tracking, achieving strong accuracy while minimising compute cost.
+An implementation of the OrchestraLLM paper — a retrieval-based routing system that dynamically dispatches dialogue turns to either a fine-tuned SLM (FLAN-T5-large) or an LLM (Gemini) for dialogue state tracking, achieving strong accuracy while minimising compute cost.
 
 ## Architecture
 
 ```
 User Turn → [SenBERT Router] → SLM Expert (Prompt-DST / FLAN-T5-large)
-                              → LLM Expert (IC-DST / Claude)
+                              → LLM Expert (IC-DST / Gemini)
 ```
 
 - **Prompt-DST** (`prompt_dst.py`): Fine-tunes FLAN-T5-large on 5% of MultiWOZ to predict turn-level belief updates.
-- **IC-DST** (`ic_dst.py`): Uses Claude with K in-context exemplars for few-shot DST.
+- **IC-DST** (`ic_dst.py`): Uses Gemini with K in-context exemplars for few-shot DST.
 - **Router** (`router.py`): SenBERT bi-encoder retrieves nearest neighbours from expert pools and assigns turns via majority vote.
 - **OrchestraLLM** (`orchestrallm.py`): Full pipeline orchestrating all components.
 
@@ -54,7 +54,7 @@ python prompt_dst.py train --config config.yaml
 python prompt_dst.py eval --config config.yaml --checkpoint ./models/prompt_dst/best
 
 # 4. Full OrchestraLLM pipeline (requires expert pools + API key)
-export ANTHROPIC_API_KEY="your-key"
+export GEMINI_API_KEY="your-key"
 python orchestrallm.py eval --config config.yaml
 ```
 
@@ -66,7 +66,7 @@ orchestrallm/
 ├── requirements.txt         # Python dependencies
 ├── data_preprocessing.py    # MultiWOZ → model-ready examples
 ├── prompt_dst.py            # FLAN-T5-large fine-tuning & inference
-├── ic_dst.py                # Claude few-shot DST
+├── ic_dst.py                # Gemini few-shot DST
 ├── evaluate.py              # JGA / TLB metrics
 ├── router.py                # SenBERT retriever & expert pools
 ├── orchestrallm.py          # Full pipeline orchestrator
