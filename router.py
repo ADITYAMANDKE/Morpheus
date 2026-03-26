@@ -499,8 +499,9 @@ class Retriever:
         """Loads a saved retriever."""
         r = cls(backbone=str(Path(path)))
         data = torch.load(str(Path(path) / "pool_index.pt"), map_location="cpu", weights_only=False)
-        r.slm_embeddings = data["slm_embeddings"]
-        r.llm_embeddings = data["llm_embeddings"]
+        device = r.model.device
+        r.slm_embeddings = data["slm_embeddings"].to(device)
+        r.llm_embeddings = data["llm_embeddings"].to(device)
         r.slm_pool = data["slm_pool"]
         r.llm_pool = data["llm_pool"]
         print(f"[Retriever] Loaded from {path}")
