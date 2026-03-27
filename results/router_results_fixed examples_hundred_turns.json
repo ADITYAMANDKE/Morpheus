@@ -1,0 +1,18 @@
+{
+  "tlb_jga": 74.32,
+  "dst_jga": 37.5,
+  "avg_slot_f1": 72.2,
+  "n_turns": 736,
+  "per_domain_tlb_accuracy": {
+    "hotel": 57.45,
+    "train": 74.13,
+    "attraction": 59.76,
+    "taxi": 31.25,
+    "restaurant": 63.25
+  },
+  "slm_assignment_ratio": 64.5,
+  "llm_assignment_ratio": 35.5,
+  "n_slm_calls": 475,
+  "n_llm_calls": 261,
+  "eval_time_seconds": 540.1
+}
