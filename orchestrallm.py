@@ -37,6 +37,11 @@ from evaluate import evaluate_predictions, compute_tlb_jga, compute_dst_jga
 from prompt_dst import PromptDST
 from ic_dst import ICDST
 from router import Retriever, encode_triplet
+from domain_router import (
+    compute_domain_reliability,
+    detect_domain_switch,
+    should_override_to_llm,
+)
 
 
 # ─── OrchestraLLM ─────────────────────────────────────────────────────────────
@@ -61,6 +66,13 @@ class OrchestraLLM:
 
         # Routing stats
         self.routing_log: list[dict] = []
+
+        # Domain-aware routing
+        self.domain_aware = self.rtr_cfg.get("domain_aware", False)
+        self.domain_reliability: dict[str, float] = {}
+        self.domain_keywords = self.rtr_cfg.get("domain_keywords", None)
+        self.reliability_threshold = self.rtr_cfg.get("reliability_threshold", 0.5)
+        self.domain_override_count = 0
 
     def load(
         self,
@@ -102,6 +114,22 @@ class OrchestraLLM:
             else:
                 print("[OrchestraLLM] WARNING: Expert pools not found. Run router.py build_pools first.")
 
+        # ── Domain Reliability (offline, once) ──
+        if self.domain_aware:
+            slm_pool_path = pool_dir / "slm_pool.json"
+            llm_pool_path = pool_dir / "llm_pool.json"
+            if slm_pool_path.exists() and llm_pool_path.exists():
+                with open(slm_pool_path) as f:
+                    slm_pool_data = json.load(f)
+                with open(llm_pool_path) as f:
+                    llm_pool_data = json.load(f)
+                self.domain_reliability = compute_domain_reliability(
+                    slm_pool_data, llm_pool_data
+                )
+                print(f"[OrchestraLLM] Domain reliability: {self.domain_reliability}")
+            else:
+                print("[OrchestraLLM] WARNING: Cannot compute domain reliability — pools not found.")
+
         # ── SLM Expert (Prompt-DST) ──
         ckpt = slm_checkpoint or str(model_dir / "best")
         print(f"[OrchestraLLM] Loading SLM expert from: {ckpt}")
@@ -138,14 +166,40 @@ class OrchestraLLM:
         """
         assert self.retriever and self.slm and self.llm, "Call .load() first"
 
-        # Step 1 & 2: Route via retriever
-        expert, routing_details = self.retriever.route(
-            prev_dst, agent_utt, user_utt,
-            top_k=self.rtr_cfg.get("top_k", 10),
-            tie_break=self.rtr_cfg.get("tie_break", "slm"),
-        )
+        domain_overridden = False
+
+        # Step 0: Domain-switch override (before KNN)
+        if self.domain_aware and self.domain_reliability:
+            new_domains = detect_domain_switch(
+                prev_dst, user_utt, self.domain_keywords
+            )
+            if should_override_to_llm(
+                new_domains, self.domain_reliability, self.reliability_threshold
+            ):
+                expert = "llm"
+                domain_overridden = True
+                routing_details = {
+                    "assigned": "llm",
+                    "reason": "domain_switch_override",
+                    "new_domains": list(new_domains),
+                    "reliability_scores": {
+                        d: self.domain_reliability.get(d, 0.5)
+                        for d in new_domains
+                    },
+                }
+                self.domain_override_count += 1
+
+        # Step 1 & 2: Route via retriever (if not overridden)
+        if not domain_overridden:
+            expert, routing_details = self.retriever.route(
+                prev_dst, agent_utt, user_utt,
+                top_k=self.rtr_cfg.get("top_k", 10),
+                tie_break=self.rtr_cfg.get("tie_break", "slm"),
+            )
+
         self.routing_log.append({
             "expert": expert,
+            "domain_overridden": domain_overridden,
             **routing_details,
         })
 
@@ -263,17 +317,25 @@ class OrchestraLLM:
         n_turns = len(self.routing_log)
         n_slm   = sum(1 for r in self.routing_log if r["expert"] == "slm")
         n_llm   = n_turns - n_slm
+        n_domain_overrides = sum(
+            1 for r in self.routing_log if r.get("domain_overridden", False)
+        )
 
         results.update({
             "slm_assignment_ratio": round(n_slm / n_turns * 100, 1) if n_turns else 0,
             "llm_assignment_ratio": round(n_llm / n_turns * 100, 1) if n_turns else 0,
             "n_slm_calls": n_slm,
             "n_llm_calls": n_llm,
+            "n_domain_overrides": n_domain_overrides,
+            "domain_override_ratio": round(n_domain_overrides / n_turns * 100, 1) if n_turns else 0,
+            "domain_reliability": self.domain_reliability,
             "eval_time_seconds": round(elapsed, 1),
         })
 
         print(f"\n[Routing] SLM: {results['slm_assignment_ratio']}% | "
               f"LLM: {results['llm_assignment_ratio']}%")
+        if n_domain_overrides:
+            print(f"[Domain Override] {n_domain_overrides} turns ({results['domain_override_ratio']}%)")
         print(f"[Timing] {elapsed:.1f}s for {n_turns} turns")
 
         return results

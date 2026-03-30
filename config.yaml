@@ -68,6 +68,17 @@ router:
   contrastive_batch_size: 16
   contrastive_temperature: 0.07
 
+  # Domain-aware routing
+  domain_aware: true                   # Enable domain-switch override
+  reliability_threshold: 0.5           # Min SLM reliability to trust; calibrate on holdout
+  domain_keywords:
+    hotel: ["hotel", "room", "stay", "accommodation", "lodge", "inn", "guesthouse"]
+    restaurant: ["restaurant", "food", "eat", "dining", "cuisine", "meal", "lunch", "dinner"]
+    attraction: ["attraction", "museum", "park", "theatre", "cinema", "gallery", "visit", "sightseeing"]
+    train: ["train", "railway", "rail", "depart", "arrive"]
+    taxi: ["taxi", "cab", "ride", "pick up", "pickup", "drop off"]
+    hospital: ["hospital", "department"]
+
 # ─── Evaluation ───────────────────────────────────────────────────────────────
 evaluation:
   metrics:
