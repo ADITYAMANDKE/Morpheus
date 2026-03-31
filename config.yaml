@@ -70,7 +70,7 @@ router:
 
   # Domain-aware routing
   domain_aware: true                   # Enable domain-switch override
-  reliability_threshold: 0.5           # Min SLM reliability to trust; calibrate on holdout
+  reliability_threshold: 0.40           # Min SLM reliability to trust; calibrate on holdout
   domain_keywords:
     hotel: ["hotel", "room", "stay", "accommodation", "lodge", "inn", "guesthouse"]
     restaurant: ["restaurant", "food", "eat", "dining", "cuisine", "meal", "lunch", "dinner"]
