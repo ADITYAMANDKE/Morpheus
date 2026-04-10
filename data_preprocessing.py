@@ -359,7 +359,7 @@ def split_dialogues(
 ) -> dict[str, list[str]]:
     """
     Splits dialogue IDs into train / holdout / val / test sets using official
-    MultiWOZ split files, matching the OrchestraLLM paper (Section 4.2).
+    MultiWOZ split files, matching the Morpheus paper (Section 4.2).
 
     Paper methodology:
     - Use official train/val/test splits from MultiWOZ
@@ -462,7 +462,7 @@ def print_stats(split_name: str, examples: list[dict]) -> None:
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description="Preprocess MultiWOZ for OrchestraLLM")
+    parser = argparse.ArgumentParser(description="Preprocess MultiWOZ for Morpheus")
     parser.add_argument("--data_dir", default="./data/multiwoz",
                         help="Directory containing MultiWOZ JSON data")
     parser.add_argument("--out_dir", default="./data/processed",

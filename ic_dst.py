@@ -3,7 +3,7 @@ ic_dst.py
 ─────────
 IC-DST: Few-shot Dialogue State Tracking with LLMs via in-context learning.
 
-Implements equation (1) from the OrchestraLLM paper:
+Implements equation (1) from the Morpheus paper:
     TLB_t = LLM(T, E_{1:K}, DST_{t-1}, A_{t-1}, U_t)
 
 Where:
@@ -66,7 +66,7 @@ class ExemplarPool:
 
     In the paper, exemplars are turn-level (agent_utt, user_utt) → TLB pairs
     sampled from the training set. For simplicity we use random sampling here;
-    the router module handles semantic retrieval for OrchestraLLM.
+    the router module handles semantic retrieval for Morpheus.
     """
 
     def __init__(self, examples: list[dict], seed: int = 42):

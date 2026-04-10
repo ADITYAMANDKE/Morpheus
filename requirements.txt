@@ -1,4 +1,4 @@
-# OrchestraLLM Requirements
+# Morpheus Requirements
 # Python >= 3.10
 
 # Core ML

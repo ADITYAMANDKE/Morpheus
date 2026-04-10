@@ -1,5 +1,5 @@
-# OrchestraLLM Configuration
-# Paper: "OrchestraLLM: Efficient Orchestration of Language Models for Dialogue State Tracking"
+# Morpheus Configuration
+# Paper: "Morpheus: Efficient Orchestration of Language Models for Dialogue State Tracking"
 
 # ─── Paths ────────────────────────────────────────────────────────────────────
 # NOTE: When running on Colab, these paths are overwritten at runtime by the
@@ -50,7 +50,7 @@ ic_dst:
   max_tokens: 512
   temperature: 0.0                     # Greedy equivalent for structured output
 
-# ─── Router (OrchestraLLM) ────────────────────────────────────────────────────
+# ─── Router (Morpheus) ────────────────────────────────────────────────────────
 router:
   retriever_backbone: "sentence-transformers/all-mpnet-base-v2"  # SenBERT
   top_k: 10                            # Majority vote over K neighbours

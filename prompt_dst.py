@@ -2,7 +2,7 @@
 prompt_dst.py
 ─────────────
 Prompt-DST: Fine-tuning and inference with FLAN-T5-large for Dialogue State
-Tracking, implementing equation (2) and (3) from the OrchestraLLM paper.
+Tracking, implementing equation (2) and (3) from the Morpheus paper.
 
     TLB_t = SLM(T, DST_{t-1}, A_{t-1}, U_t)
     max log P(TLB_t | T, DST_{t-1}, A_{t-1}, U_t)

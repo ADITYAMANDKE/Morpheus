@@ -1,7 +1,7 @@
 """
 domain_router.py
 ────────────────
-Domain-aware routing overlay for OrchestraLLM.
+Domain-aware routing overlay for Morpheus.
 
 Detects domain switches in dialogue turns and overrides KNN routing
 when the SLM is historically weak on newly activated domains.
