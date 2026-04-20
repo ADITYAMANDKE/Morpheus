@@ -1,7 +1,7 @@
 """
 router.py
 ─────────
-OrchestraLLM Router: Retrieval-based dynamic routing between SLM and LLM.
+Morpheus Router: Retrieval-based dynamic routing between SLM and LLM.
 
 Implements Section 3 of the paper:
 
@@ -324,7 +324,7 @@ class ContrastiveDataset(Dataset):
 
 class Retriever:
     """
-    SenBERT bi-encoder retriever for OrchestraLLM routing.
+    SenBERT bi-encoder retriever for Morpheus routing.
 
     Encodes dialogue triplets into embeddings, then uses cosine similarity
     to find nearest neighbours in the expert pools.
@@ -563,7 +563,7 @@ def load_config(path: str) -> dict:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="OrchestraLLM Router")
+    parser = argparse.ArgumentParser(description="Morpheus Router")
     parser.add_argument("mode", choices=["build_pools", "train_retriever", "route"])
     parser.add_argument("--config", default="./config.yaml")
     parser.add_argument("--agent_utt", default="")

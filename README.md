@@ -1,22 +1,45 @@
-# OrchestraLLM
+# Morpheus
 
 > **Efficient Orchestration of Language Models for Dialogue State Tracking**
 
-An implementation of the OrchestraLLM paper — a retrieval-based routing system that dynamically dispatches dialogue turns to either a fine-tuned SLM (FLAN-T5-large) or an LLM (Gemini) for dialogue state tracking, achieving strong accuracy while minimising compute cost.
+Morpheus is a retrieval-based routing system for Dialogue State Tracking (DST) on task-oriented dialogues, built on top of the [OrchestraLLM paper](https://arxiv.org/pdf/2311.09758). It uses a SenBERT bi-encoder to dynamically route each conversation turn to either a fine-tuned **SLM** (FLAN-T5-large) or an **LLM** (Gemini) via KNN majority vote over expert pools. On top of the base routing, Morpheus adds **domain-aware routing** — the SLM is first evaluated on a holdout set to produce per-domain predictions, and per-domain reliability scores are then computed from the expert pool distributions (the ratio of turns where the SLM was correct vs where the LLM was correct for each domain). At inference time, when the user switches to a new domain whose SLM reliability score falls below the `reliability_threshold`, the KNN decision is overridden and the turn is escalated to the LLM. The threshold itself is calibrated offline using `calibrate_threshold.py`, which sweeps candidate values (0.3–0.8) on the holdout set and selects the one that overrides roughly 5–15% of turns for the best accuracy-cost trade-off (default: 0.40).
 
-## Architecture
+## How It Works
+
+At each dialogue turn, Morpheus:
+
+1. **Encodes** the current context — previous dialogue state, agent utterance, and user utterance — into a dense vector using a SenBERT bi-encoder.
+2. **Retrieves** the top-K nearest neighbours from pre-built SLM and LLM expert pools.
+3. **Votes** — majority vote decides which expert handles the turn.
+4. **(Optional) Domain-aware override** — if the user switches to a new domain where the SLM has historically low reliability, the turn is automatically routed to the LLM.
+5. **Predicts** the Turn-Level Belief (TLB) update using the chosen expert.
+6. **Aggregates** the TLB into the running dialogue state.
 
 ```
-User Turn → [SenBERT Router] → SLM Expert (Prompt-DST / FLAN-T5-large)
-                              → LLM Expert (IC-DST / Gemini)
+                              ┌─────────────────────────────────────┐
+                              │         SLM Expert (Prompt-DST)     │
+User Turn ──► SenBERT ──► KNN ├─────────────────────────────────────┤──► TLB ──► DST
+              Encoder    Vote │         LLM Expert (IC-DST)         │
+                              └─────────────────────────────────────┘
+                                  ▲ domain-switch override (optional)
 ```
 
-- **Prompt-DST** (`prompt_dst.py`): Fine-tunes FLAN-T5-large on 5% of MultiWOZ to predict turn-level belief updates.
-- **IC-DST** (`ic_dst.py`): Uses Gemini with K in-context exemplars for few-shot DST.
-- **Router** (`router.py`): SenBERT bi-encoder retrieves nearest neighbours from expert pools and assigns turns via majority vote.
-- **OrchestraLLM** (`orchestrallm.py`): Full pipeline orchestrating all components.
+## Components
 
-## Quick Start (Google Colab)
+| Module | File | Description |
+|--------|------|-------------|
+| **Morpheus** | `morpheus.py` | Full pipeline orchestrator — loads all components and runs end-to-end evaluation or interactive inference. |
+| **Prompt-DST** | `prompt_dst.py` | Fine-tunes FLAN-T5-large on a small subset (5%) of MultiWOZ data to predict turn-level belief updates. |
+| **IC-DST** | `ic_dst.py` | Uses Gemini with K in-context exemplars for few-shot dialogue state tracking — no fine-tuning required. |
+| **Router** | `router.py` | SenBERT bi-encoder that retrieves nearest neighbours from expert pools and assigns turns via majority vote. Includes contrastive fine-tuning for improved routing. |
+| **Domain Router** | `domain_router.py` | Domain-aware routing overlay — detects domain switches and overrides KNN routing when the SLM is weak on newly activated domains. |
+| **Data Preprocessing** | `data_preprocessing.py` | Converts raw MultiWOZ 2.4 JSON into model-ready turn-level JSONL files with train/holdout/val splits. |
+| **Evaluation** | `evaluate.py` | Computes Joint Goal Accuracy (JGA) at both turn-level (TLB) and dialogue-level (DST). |
+| **Threshold Calibration** | `calibrate_threshold.py` | Calibrates the domain reliability threshold on a holdout set for optimal routing. |
+
+## Quick Start
+
+### Google Colab (Recommended)
 
 [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/)
 
@@ -24,53 +47,54 @@ User Turn → [SenBERT Router] → SLM Expert (Prompt-DST / FLAN-T5-large)
 2. Connect to a **T4 GPU** runtime.
 3. Follow the cells in order — the notebook handles setup, data, training, and evaluation.
 
-## Local Setup
+### Local Setup
 
 ```bash
-git clone https://github.com/<your-username>/orchestrallm.git
-cd orchestrallm
+git clone https://github.com/<your-username>/morpheus.git
+cd morpheus
 pip install -r requirements.txt
 ```
 
-### Data
+**Data:** Download [MultiWOZ 2.4](https://github.com/smartyfh/MultiWOZ2.4) and place `data.json` in `data/multiwoz/`.
 
-Download [MultiWOZ 2.4](https://github.com/smartyfh/MultiWOZ2.4) and place `data.json` in `data/multiwoz/`:
-
-```bash
-mkdir -p data/multiwoz
-# Place data.json here
-```
-
-### Pipeline
+### Running the Pipeline
 
 ```bash
-# 1. Preprocess
+# 1. Preprocess MultiWOZ data into train/val/holdout splits
 python data_preprocessing.py --config config.yaml
 
-# 2. Fine-tune Prompt-DST
+# 2. Fine-tune the SLM expert (Prompt-DST on FLAN-T5-large)
 python prompt_dst.py train --config config.yaml
 
-# 3. Evaluate
+# 3. Evaluate the SLM expert standalone
 python prompt_dst.py eval --config config.yaml --checkpoint ./models/prompt_dst/best
 
-# 4. Full OrchestraLLM pipeline (requires expert pools + API key)
+# 4. Build expert pools for the router
+python router.py build_pools --config config.yaml
+
+# 5. Run full Morpheus evaluation (requires Gemini API key)
 export GEMINI_API_KEY="your-key"
-python orchestrallm.py eval --config config.yaml
+python morpheus.py eval --config config.yaml
+
+# 6. Interactive single-turn inference
+python morpheus.py infer --config config.yaml
 ```
 
 ## Project Structure
 
 ```
-orchestrallm/
-├── config.yaml              # Hyperparameters and paths
-├── requirements.txt         # Python dependencies
-├── data_preprocessing.py    # MultiWOZ → model-ready examples
-├── prompt_dst.py            # FLAN-T5-large fine-tuning & inference
-├── ic_dst.py                # Gemini few-shot DST
+morpheus/
+├── config.yaml              # All hyperparameters and paths
+├── requirements.txt         # Python >= 3.10 dependencies
+├── morpheus.py              # Full pipeline orchestrator
+├── prompt_dst.py            # SLM expert — FLAN-T5-large fine-tuning & inference
+├── ic_dst.py                # LLM expert — Gemini few-shot DST
+├── router.py                # SenBERT retriever, expert pools, contrastive training
+├── domain_router.py         # Domain-switch detection & override logic
+├── data_preprocessing.py    # MultiWOZ → model-ready JSONL
 ├── evaluate.py              # JGA / TLB metrics
-├── router.py                # SenBERT retriever & expert pools
-├── orchestrallm.py          # Full pipeline orchestrator
-├── notebooks/               # Colab notebook(s)
+├── calibrate_threshold.py   # Holdout-based threshold calibration
+├── notebooks/               # Google Colab notebook(s)
 ├── data/                    # Raw & processed data (gitignored)
 ├── models/                  # Checkpoints (gitignored)
 └── results/                 # Evaluation outputs (gitignored)
@@ -78,21 +102,24 @@ orchestrallm/
 
 ## Key Metrics
 
-| Metric  | Description |
-|---------|-------------|
-| TLB JGA | Turn-Level Belief Joint Goal Accuracy — accuracy on per-turn slot changes |
-| DST JGA | Dialogue State Tracking JGA — accuracy on full accumulated states |
+| Metric | Description |
+|--------|-------------|
+| **TLB JGA** | Turn-Level Belief Joint Goal Accuracy — measures whether all slot changes predicted for a single turn exactly match the gold standard. |
+| **DST JGA** | Dialogue State Tracking Joint Goal Accuracy — measures whether the full accumulated dialogue state matches the gold state at each turn. |
 
 ## Configuration
 
-All hyperparameters are in `config.yaml`. Key settings:
+All hyperparameters live in `config.yaml`. Key settings:
 
 | Parameter | Default | Notes |
 |-----------|---------|-------|
-| `batch_size` | 2 | Fits T4 GPU (15GB); increase for larger GPUs |
-| `gradient_accumulation_steps` | 16 | Effective batch = batch_size × this |
-| `num_epochs` | 10 | With early stopping (patience=3) |
-| `few_shot_ratio` | 0.05 | 5% of data for training |
+| `few_shot_ratio` | 0.05 | 5% of MultiWOZ training data for SLM fine-tuning |
+| `batch_size` | 2 | Fits T4 GPU (15 GB VRAM); increase for larger GPUs |
+| `gradient_accumulation_steps` | 16 | Effective batch size = 2 × 16 = 32 |
+| `num_epochs` | 10 | With early stopping (patience = 3) |
+| `top_k` | 10 | Majority vote over K neighbours for routing |
+| `domain_aware` | true | Enable domain-switch override routing |
+| `reliability_threshold` | 0.40 | Minimum SLM reliability to trust; below this routes to LLM |
 
 ## License
 

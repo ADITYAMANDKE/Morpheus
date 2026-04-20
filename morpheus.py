@@ -1,7 +1,7 @@
 """
-orchestrallm.py
-───────────────
-OrchestraLLM: Full pipeline orchestrator combining Prompt-DST (SLM),
+morpheus.py
+───────────
+Morpheus: Full pipeline orchestrator combining Prompt-DST (SLM),
 IC-DST (LLM), and the retrieval-based router.
 
 At inference time (Figure 1 of the paper):
@@ -13,10 +13,10 @@ At inference time (Figure 1 of the paper):
 
 Usage:
     # Full evaluation
-    python orchestrallm.py eval --config config.yaml
+    python morpheus.py eval --config config.yaml
 
     # Single-turn interactive inference
-    python orchestrallm.py infer --config config.yaml
+    python morpheus.py infer --config config.yaml
 """
 
 import argparse
@@ -37,13 +37,18 @@ from evaluate import evaluate_predictions, compute_tlb_jga, compute_dst_jga
 from prompt_dst import PromptDST
 from ic_dst import ICDST
 from router import Retriever, encode_triplet
+from domain_router import (
+    compute_domain_reliability,
+    detect_domain_switch,
+    should_override_to_llm,
+)
 
 
-# ─── OrchestraLLM ─────────────────────────────────────────────────────────────
+# ─── Morpheus ─────────────────────────────────────────────────────────────────
 
-class OrchestraLLM:
+class Morpheus:
     """
-    Full OrchestraLLM pipeline: router + SLM expert + LLM expert.
+    Full Morpheus pipeline: router + SLM expert + LLM expert.
 
     The router dynamically dispatches each turn to the most appropriate expert
     based on semantic similarity to the expert pools.
@@ -61,6 +66,16 @@ class OrchestraLLM:
 
         # Routing stats
         self.routing_log: list[dict] = []
+
+        # Domain-aware routing
+        self.domain_aware = self.rtr_cfg.get("domain_aware", False)
+        self.domain_reliability: dict[str, float] = {}
+        self.domain_keywords = self.rtr_cfg.get("domain_keywords", None)
+        self.reliability_threshold = self.rtr_cfg.get("reliability_threshold", 0.5)
+        self.domain_override_count = 0
+
+        # Force all turns to one expert (for baseline comparison)
+        self.force_expert: Optional[str] = None
 
     def load(
         self,
@@ -82,10 +97,10 @@ class OrchestraLLM:
         # ── Router ──
         r_path = retriever_path or str(pool_dir / "retriever")
         if Path(r_path).exists():
-            print("[OrchestraLLM] Loading fine-tuned retriever...")
+            print("[Morpheus] Loading fine-tuned retriever...")
             self.retriever = Retriever.load(r_path)
         else:
-            print("[OrchestraLLM] Using off-the-shelf SenBERT retriever...")
+            print("[Morpheus] Using off-the-shelf SenBERT retriever...")
             backbone = self.rtr_cfg.get("retriever_backbone",
                                         "sentence-transformers/all-mpnet-base-v2")
             self.retriever = Retriever(backbone=backbone)
@@ -100,21 +115,37 @@ class OrchestraLLM:
                     llm_pool = json.load(f)
                 self.retriever.index_pools(slm_pool, llm_pool)
             else:
-                print("[OrchestraLLM] WARNING: Expert pools not found. Run router.py build_pools first.")
+                print("[Morpheus] WARNING: Expert pools not found. Run router.py build_pools first.")
+
+        # ── Domain Reliability (offline, once) ──
+        if self.domain_aware:
+            slm_pool_path = pool_dir / "slm_pool.json"
+            llm_pool_path = pool_dir / "llm_pool.json"
+            if slm_pool_path.exists() and llm_pool_path.exists():
+                with open(slm_pool_path) as f:
+                    slm_pool_data = json.load(f)
+                with open(llm_pool_path) as f:
+                    llm_pool_data = json.load(f)
+                self.domain_reliability = compute_domain_reliability(
+                    slm_pool_data, llm_pool_data
+                )
+                print(f"[Morpheus] Domain reliability: {self.domain_reliability}")
+            else:
+                print("[Morpheus] WARNING: Cannot compute domain reliability — pools not found.")
 
         # ── SLM Expert (Prompt-DST) ──
         ckpt = slm_checkpoint or str(model_dir / "best")
-        print(f"[OrchestraLLM] Loading SLM expert from: {ckpt}")
+        print(f"[Morpheus] Loading SLM expert from: {ckpt}")
         self.slm = PromptDST(self.config)
         self.slm.load(ckpt if Path(ckpt).exists() else None)
 
         # ── LLM Expert (IC-DST) ──
-        print("[OrchestraLLM] Initialising LLM expert (IC-DST)...")
+        print("[Morpheus] Initialising LLM expert (IC-DST)...")
         self.llm = ICDST(self.config)
         if exemplar_examples:
             self.llm.load_exemplar_pool(exemplar_examples)
 
-        print("[OrchestraLLM] All components loaded.")
+        print("[Morpheus] All components loaded.")
         return self
 
     def predict_turn(
@@ -138,14 +169,51 @@ class OrchestraLLM:
         """
         assert self.retriever and self.slm and self.llm, "Call .load() first"
 
+        domain_overridden = False
+
+        # Forced expert mode (bypass router entirely)
+        if self.force_expert:
+            expert = self.force_expert
+            routing_details = {"assigned": expert, "reason": "forced"}
+
+        # Step 0: Domain-switch override (before KNN)
+        elif self.domain_aware and self.domain_reliability:
+            new_domains = detect_domain_switch(
+                prev_dst, user_utt, self.domain_keywords
+            )
+            if should_override_to_llm(
+                new_domains, self.domain_reliability, self.reliability_threshold
+            ):
+                expert = "llm"
+                domain_overridden = True
+                routing_details = {
+                    "assigned": "llm",
+                    "reason": "domain_switch_override",
+                    "new_domains": list(new_domains),
+                    "reliability_scores": {
+                        d: self.domain_reliability.get(d, 0.5)
+                        for d in new_domains
+                    },
+                }
+                self.domain_override_count += 1
+            else:
+                expert, routing_details = self.retriever.route(
+                    prev_dst, agent_utt, user_utt,
+                    top_k=self.rtr_cfg.get("top_k", 10),
+                    tie_break=self.rtr_cfg.get("tie_break", "slm"),
+                )
+
         # Step 1 & 2: Route via retriever
-        expert, routing_details = self.retriever.route(
-            prev_dst, agent_utt, user_utt,
-            top_k=self.rtr_cfg.get("top_k", 10),
-            tie_break=self.rtr_cfg.get("tie_break", "slm"),
-        )
+        else:
+            expert, routing_details = self.retriever.route(
+                prev_dst, agent_utt, user_utt,
+                top_k=self.rtr_cfg.get("top_k", 10),
+                tie_break=self.rtr_cfg.get("tie_break", "slm"),
+            )
+
         self.routing_log.append({
             "expert": expert,
+            "domain_overridden": domain_overridden,
             **routing_details,
         })
 
@@ -169,7 +237,7 @@ class OrchestraLLM:
         turns: list[dict],
     ) -> tuple[list[dict], dict, list[str]]:
         """
-        Runs OrchestraLLM over all turns of a dialogue.
+        Runs Morpheus over all turns of a dialogue.
 
         Args:
             turns: Sorted list of turn dicts for one dialogue.
@@ -203,7 +271,7 @@ class OrchestraLLM:
         max_dialogues: Optional[int] = None,
     ) -> dict:
         """
-        Full evaluation of OrchestraLLM on a set of turn examples.
+        Full evaluation of Morpheus on a set of turn examples.
 
         Reports TLB JGA, DST JGA, SLM assignment ratio, and FLOPs estimate.
 
@@ -234,7 +302,7 @@ class OrchestraLLM:
         start = time.time()
         for i, (did, turns) in enumerate(dialogues.items()):
             if i % 5 == 0:
-                print(f"[OrchestraLLM] Dialogue {i+1}/{len(dialogues)}: {did}")
+                print(f"[Morpheus] Dialogue {i+1}/{len(dialogues)}: {did}")
 
             accumulated_dst: dict[str, str] = {}
             for turn in turns:
@@ -263,17 +331,25 @@ class OrchestraLLM:
         n_turns = len(self.routing_log)
         n_slm   = sum(1 for r in self.routing_log if r["expert"] == "slm")
         n_llm   = n_turns - n_slm
+        n_domain_overrides = sum(
+            1 for r in self.routing_log if r.get("domain_overridden", False)
+        )
 
         results.update({
             "slm_assignment_ratio": round(n_slm / n_turns * 100, 1) if n_turns else 0,
             "llm_assignment_ratio": round(n_llm / n_turns * 100, 1) if n_turns else 0,
             "n_slm_calls": n_slm,
             "n_llm_calls": n_llm,
+            "n_domain_overrides": n_domain_overrides,
+            "domain_override_ratio": round(n_domain_overrides / n_turns * 100, 1) if n_turns else 0,
+            "domain_reliability": self.domain_reliability,
             "eval_time_seconds": round(elapsed, 1),
         })
 
         print(f"\n[Routing] SLM: {results['slm_assignment_ratio']}% | "
               f"LLM: {results['llm_assignment_ratio']}%")
+        if n_domain_overrides:
+            print(f"[Domain Override] {n_domain_overrides} turns ({results['domain_override_ratio']}%)")
         print(f"[Timing] {elapsed:.1f}s for {n_turns} turns")
 
         return results
@@ -300,10 +376,12 @@ def load_config(path: str) -> dict:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="OrchestraLLM Full Pipeline")
+    parser = argparse.ArgumentParser(description="Morpheus Full Pipeline")
     parser.add_argument("mode", choices=["eval", "infer"])
     parser.add_argument("--config", default="./config.yaml")
     parser.add_argument("--max_dialogues", type=int, default=None)
+    parser.add_argument("--force_expert", choices=["slm", "llm"], default=None,
+                        help="Force all turns to one expert (for baseline comparison)")
     parser.add_argument("--results_out", default=None,
                         help="Path to save results JSON")
     args = parser.parse_args()
@@ -315,7 +393,10 @@ def main():
     # Load training examples for IC-DST exemplar pool
     train_ex = load_jsonl(str(proc_dir / "train.jsonl"))
 
-    pipeline = OrchestraLLM(config)
+    pipeline = Morpheus(config)
+    if args.force_expert:
+        pipeline.force_expert = args.force_expert
+        print(f"[Morpheus] FORCED MODE: all turns → {args.force_expert.upper()}")
     pipeline.load(exemplar_examples=train_ex)
 
     if args.mode == "eval":
@@ -323,7 +404,7 @@ def main():
         results = pipeline.evaluate(val_ex, max_dialogues=args.max_dialogues)
 
         out_path = args.results_out or str(
-            Path(paths.get("results_dir", "./results")) / "orchestrallm_results.json"
+            Path(paths.get("results_dir", "./results")) / "morpheus_results.json"
         )
         Path(out_path).parent.mkdir(parents=True, exist_ok=True)
         with open(out_path, "w") as f:
@@ -331,7 +412,7 @@ def main():
         print(f"\nResults saved → {out_path}")
 
     elif args.mode == "infer":
-        print("\n[OrchestraLLM Interactive Mode]")
+        print("\n[Morpheus Interactive Mode]")
         print("Type 'quit' to exit. Press Enter to use empty utterances.\n")
         accumulated_dst: dict[str, str] = {}
         prev_agent = ""

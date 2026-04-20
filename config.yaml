@@ -1,5 +1,5 @@
-# OrchestraLLM Configuration
-# Paper: "OrchestraLLM: Efficient Orchestration of Language Models for Dialogue State Tracking"
+# Morpheus Configuration
+# Paper: "Morpheus: Efficient Orchestration of Language Models for Dialogue State Tracking"
 
 # ─── Paths ────────────────────────────────────────────────────────────────────
 # NOTE: When running on Colab, these paths are overwritten at runtime by the
@@ -50,7 +50,7 @@ ic_dst:
   max_tokens: 512
   temperature: 0.0                     # Greedy equivalent for structured output
 
-# ─── Router (OrchestraLLM) ────────────────────────────────────────────────────
+# ─── Router (Morpheus) ────────────────────────────────────────────────────────
 router:
   retriever_backbone: "sentence-transformers/all-mpnet-base-v2"  # SenBERT
   top_k: 10                            # Majority vote over K neighbours
@@ -67,6 +67,17 @@ router:
   contrastive_epochs: 5
   contrastive_batch_size: 16
   contrastive_temperature: 0.07
+
+  # Domain-aware routing
+  domain_aware: true                   # Enable domain-switch override
+  reliability_threshold: 0.40           # Min SLM reliability to trust; calibrate on holdout
+  domain_keywords:
+    hotel: ["hotel", "room", "stay", "accommodation", "lodge", "inn", "guesthouse"]
+    restaurant: ["restaurant", "food", "eat", "dining", "cuisine", "meal", "lunch", "dinner"]
+    attraction: ["attraction", "museum", "park", "theatre", "cinema", "gallery", "visit", "sightseeing"]
+    train: ["train", "railway", "rail", "depart", "arrive"]
+    taxi: ["taxi", "cab", "ride", "pick up", "pickup", "drop off"]
+    hospital: ["hospital", "department"]
 
 # ─── Evaluation ───────────────────────────────────────────────────────────────
 evaluation:
