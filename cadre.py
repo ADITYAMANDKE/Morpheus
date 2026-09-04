@@ -1,7 +1,7 @@
 """
-morpheus.py
+cadre.py
 ───────────
-Morpheus: Full pipeline orchestrator combining Prompt-DST (SLM),
+CADRE: Full pipeline orchestrator combining Prompt-DST (SLM),
 IC-DST (LLM), and the retrieval-based router.
 
 At inference time (Figure 1 of the paper):
@@ -13,10 +13,10 @@ At inference time (Figure 1 of the paper):
 
 Usage:
     # Full evaluation
-    python morpheus.py eval --config config.yaml
+    python cadre.py eval --config config.yaml
 
     # Single-turn interactive inference
-    python morpheus.py infer --config config.yaml
+    python cadre.py infer --config config.yaml
 """
 
 import argparse
@@ -44,11 +44,11 @@ from domain_router import (
 )
 
 
-# ─── Morpheus ─────────────────────────────────────────────────────────────────
+# ─── CADRE ─────────────────────────────────────────────────────────────────
 
-class Morpheus:
+class CADRE:
     """
-    Full Morpheus pipeline: router + SLM expert + LLM expert.
+    Full CADRE pipeline: router + SLM expert + LLM expert.
 
     The router dynamically dispatches each turn to the most appropriate expert
     based on semantic similarity to the expert pools.
@@ -97,10 +97,10 @@ class Morpheus:
         # ── Router ──
         r_path = retriever_path or str(pool_dir / "retriever")
         if Path(r_path).exists():
-            print("[Morpheus] Loading fine-tuned retriever...")
+            print("[CADRE] Loading fine-tuned retriever...")
             self.retriever = Retriever.load(r_path)
         else:
-            print("[Morpheus] Using off-the-shelf SenBERT retriever...")
+            print("[CADRE] Using off-the-shelf SenBERT retriever...")
             backbone = self.rtr_cfg.get("retriever_backbone",
                                         "sentence-transformers/all-mpnet-base-v2")
             self.retriever = Retriever(backbone=backbone)
@@ -115,7 +115,7 @@ class Morpheus:
                     llm_pool = json.load(f)
                 self.retriever.index_pools(slm_pool, llm_pool)
             else:
-                print("[Morpheus] WARNING: Expert pools not found. Run router.py build_pools first.")
+                print("[CADRE] WARNING: Expert pools not found. Run router.py build_pools first.")
 
         # ── Domain Reliability (offline, once) ──
         if self.domain_aware:
@@ -129,23 +129,23 @@ class Morpheus:
                 self.domain_reliability = compute_domain_reliability(
                     slm_pool_data, llm_pool_data
                 )
-                print(f"[Morpheus] Domain reliability: {self.domain_reliability}")
+                print(f"[CADRE] Domain reliability: {self.domain_reliability}")
             else:
-                print("[Morpheus] WARNING: Cannot compute domain reliability — pools not found.")
+                print("[CADRE] WARNING: Cannot compute domain reliability — pools not found.")
 
         # ── SLM Expert (Prompt-DST) ──
         ckpt = slm_checkpoint or str(model_dir / "best")
-        print(f"[Morpheus] Loading SLM expert from: {ckpt}")
+        print(f"[CADRE] Loading SLM expert from: {ckpt}")
         self.slm = PromptDST(self.config)
         self.slm.load(ckpt if Path(ckpt).exists() else None)
 
         # ── LLM Expert (IC-DST) ──
-        print("[Morpheus] Initialising LLM expert (IC-DST)...")
+        print("[CADRE] Initialising LLM expert (IC-DST)...")
         self.llm = ICDST(self.config)
         if exemplar_examples:
             self.llm.load_exemplar_pool(exemplar_examples)
 
-        print("[Morpheus] All components loaded.")
+        print("[CADRE] All components loaded.")
         return self
 
     def predict_turn(
@@ -237,7 +237,7 @@ class Morpheus:
         turns: list[dict],
     ) -> tuple[list[dict], dict, list[str]]:
         """
-        Runs Morpheus over all turns of a dialogue.
+        Runs CADRE over all turns of a dialogue.
 
         Args:
             turns: Sorted list of turn dicts for one dialogue.
@@ -271,7 +271,7 @@ class Morpheus:
         max_dialogues: Optional[int] = None,
     ) -> dict:
         """
-        Full evaluation of Morpheus on a set of turn examples.
+        Full evaluation of CADRE on a set of turn examples.
 
         Reports TLB JGA, DST JGA, SLM assignment ratio, and FLOPs estimate.
 
@@ -302,7 +302,7 @@ class Morpheus:
         start = time.time()
         for i, (did, turns) in enumerate(dialogues.items()):
             if i % 5 == 0:
-                print(f"[Morpheus] Dialogue {i+1}/{len(dialogues)}: {did}")
+                print(f"[CADRE] Dialogue {i+1}/{len(dialogues)}: {did}")
 
             accumulated_dst: dict[str, str] = {}
             for turn in turns:
@@ -376,7 +376,7 @@ def load_config(path: str) -> dict:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Morpheus Full Pipeline")
+    parser = argparse.ArgumentParser(description="CADRE Full Pipeline")
     parser.add_argument("mode", choices=["eval", "infer"])
     parser.add_argument("--config", default="./config.yaml")
     parser.add_argument("--max_dialogues", type=int, default=None)
@@ -393,10 +393,10 @@ def main():
     # Load training examples for IC-DST exemplar pool
     train_ex = load_jsonl(str(proc_dir / "train.jsonl"))
 
-    pipeline = Morpheus(config)
+    pipeline = CADRE(config)
     if args.force_expert:
         pipeline.force_expert = args.force_expert
-        print(f"[Morpheus] FORCED MODE: all turns → {args.force_expert.upper()}")
+        print(f"[CADRE] FORCED MODE: all turns → {args.force_expert.upper()}")
     pipeline.load(exemplar_examples=train_ex)
 
     if args.mode == "eval":
@@ -404,7 +404,7 @@ def main():
         results = pipeline.evaluate(val_ex, max_dialogues=args.max_dialogues)
 
         out_path = args.results_out or str(
-            Path(paths.get("results_dir", "./results")) / "morpheus_results.json"
+            Path(paths.get("results_dir", "./results")) / "cadre_results.json"
         )
         Path(out_path).parent.mkdir(parents=True, exist_ok=True)
         with open(out_path, "w") as f:
@@ -412,7 +412,7 @@ def main():
         print(f"\nResults saved → {out_path}")
 
     elif args.mode == "infer":
-        print("\n[Morpheus Interactive Mode]")
+        print("\n[CADRE Interactive Mode]")
         print("Type 'quit' to exit. Press Enter to use empty utterances.\n")
         accumulated_dst: dict[str, str] = {}
         prev_agent = ""

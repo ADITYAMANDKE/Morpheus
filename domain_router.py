@@ -1,7 +1,7 @@
 """
 domain_router.py
 ────────────────
-Domain-aware routing overlay for Morpheus.
+Domain-aware routing overlay for CADRE.
 
 Detects domain switches in dialogue turns and overrides KNN routing
 when the SLM is historically weak on newly activated domains.

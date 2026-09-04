@@ -126,8 +126,7 @@ def compute_tlb(prev_state: dict[str, str], curr_state: dict[str, str]) -> dict[
     Computes the Turn-Level Belief (TLB): only slots that are NEW or have
     CHANGED values compared to the previous state.
 
-    Per paper footnote 1: "We replace previous values with updated ones for
-    slots present in prior TLBs."
+    Later values replace previous ones for slots present in prior TLBs.
 
     Args:
         prev_state: Flat dialogue state from the previous system turn.
@@ -183,7 +182,7 @@ def format_input(
     """
     Builds the full input string for Prompt-DST (FLAN-T5).
 
-    Structure mirrors equation (2) from the paper:
+    Structure mirrors the SLM expert input (paper Section 2.1):
         TLB_t = SLM(T, DST_{t-1}, A_{t-1}, U_t)
 
     Args:
@@ -359,7 +358,7 @@ def split_dialogues(
 ) -> dict[str, list[str]]:
     """
     Splits dialogue IDs into train / holdout / val / test sets using official
-    MultiWOZ split files, matching the Morpheus paper (Section 4.2).
+    MultiWOZ split files, matching the CADRE paper (Section 3.1).
 
     Paper methodology:
     - Use official train/val/test splits from MultiWOZ
@@ -462,7 +461,7 @@ def print_stats(split_name: str, examples: list[dict]) -> None:
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description="Preprocess MultiWOZ for Morpheus")
+    parser = argparse.ArgumentParser(description="Preprocess MultiWOZ for CADRE")
     parser.add_argument("--data_dir", default="./data/multiwoz",
                         help="Directory containing MultiWOZ JSON data")
     parser.add_argument("--out_dir", default="./data/processed",

@@ -1,17 +1,17 @@
 """
 router.py
 ─────────
-Morpheus Router: Retrieval-based dynamic routing between SLM and LLM.
+CADRE Router: Retrieval-based dynamic routing between SLM and LLM.
 
-Implements Section 3 of the paper:
+Implements Section 2.3 of the CADRE paper (building on OrchestraLLM, Lee et al. 2024):
 
-    Step 1 — Expert Pool Construction (Section 3.1):
+    Step 1 — Expert Pool Construction:
         Run both SLM and LLM on a small holdout set. Assign each turn to the
         expert that predicted it correctly (prefer SLM on ties).
 
-    Step 2 — Triplet Representation Learning (Section 3.2):
-        Fine-tune SenBERT with contrastive loss using task-aware and/or
-        expert-aware supervision to better separate SLM vs LLM examples.
+    Step 2 — (Optional, NOT part of the CADRE paper) Contrastive fine-tuning of
+        SenBERT with task-aware and/or expert-aware supervision, inherited from
+        OrchestraLLM. Disabled by default; the paper uses the off-the-shelf encoder.
 
     Step 3 — Routing (Figure 1):
         For a new turn:
@@ -84,7 +84,7 @@ class ExpertPool:
     """
     Stores turn-level examples tagged with their correct expert (SLM or LLM).
 
-    Construction logic (Section 3.1):
+    Construction logic (paper Section 2.3, "Expert pools"):
         - Both correct → assign to SLM pool (prefer cheaper model)
         - Only SLM correct → assign to SLM pool
         - Only LLM correct → assign to LLM pool
@@ -168,7 +168,7 @@ def compute_instance_similarity(ex_a: dict, ex_b: dict) -> float:
     """
     Computes task-aware similarity between two instances.
 
-    From Section 3.2:
+    From OrchestraLLM Section 3.2 (used only for optional retriever fine-tuning):
         Sim = 0.5 * SimDST + 0.5 * SimTLB
         SimTLB = F1_slot_value + F1_slot - 1
 
@@ -192,7 +192,7 @@ class ContrastiveDataset(Dataset):
     """
     Contrastive pairs dataset for fine-tuning the SenBERT retriever.
 
-    Supports three supervision modes (Section 3.2):
+    Supports three supervision modes (OrchestraLLM Section 3.2):
         - task    : Pairs based on slot-value similarity of ground-truth states.
         - expert  : Pairs based on which expert was correct.
         - task+expert: Union of both.
@@ -248,9 +248,9 @@ class ContrastiveDataset(Dataset):
 
     def _add_expert_pairs(self, examples, expert_labels, num_pairs, rng):
         """
-        Adds expert-aware positive/negative pairs (Section 3.2).
+        Adds expert-aware positive/negative pairs (OrchestraLLM Section 3.2).
 
-        Paper: "Expert-Aware Supervision first groups instances by expert label.
+        OrchestraLLM: "Expert-Aware Supervision first groups instances by expert label.
         We compute pairwise triplet similarities using an off-the-shelf embedder
         (e.g., SenBERT). The l highest scoring pairs with the same expert label
         are positive examples, and the l lowest scoring pairs with different
@@ -324,7 +324,7 @@ class ContrastiveDataset(Dataset):
 
 class Retriever:
     """
-    SenBERT bi-encoder retriever for Morpheus routing.
+    SenBERT bi-encoder retriever for CADRE routing.
 
     Encodes dialogue triplets into embeddings, then uses cosine similarity
     to find nearest neighbours in the expert pools.
@@ -421,7 +421,7 @@ class Retriever:
         elif llm_votes > slm_votes:
             assigned = "llm"
         else:
-            assigned = tie_break  # Paper: prefer SLM on tie
+            assigned = tie_break  # Paper: ties prefer the SLM (cheaper expert)
 
         details = {
             "assigned": assigned,
@@ -563,7 +563,7 @@ def load_config(path: str) -> dict:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Morpheus Router")
+    parser = argparse.ArgumentParser(description="CADRE Router")
     parser.add_argument("mode", choices=["build_pools", "train_retriever", "route"])
     parser.add_argument("--config", default="./config.yaml")
     parser.add_argument("--agent_utt", default="")

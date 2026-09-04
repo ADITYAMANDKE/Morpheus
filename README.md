@@ -1,12 +1,12 @@
-# Morpheus
+# CADRE
 
 > **Efficient Orchestration of Language Models for Dialogue State Tracking**
 
-Morpheus is a retrieval-based routing system for Dialogue State Tracking (DST) on task-oriented dialogues, built on top of the [OrchestraLLM paper](https://arxiv.org/pdf/2311.09758). It uses a SenBERT bi-encoder to dynamically route each conversation turn to either a fine-tuned **SLM** (FLAN-T5-large) or an **LLM** (Gemini) via KNN majority vote over expert pools. On top of the base routing, Morpheus adds **domain-aware routing** — the SLM is first evaluated on a holdout set to produce per-domain predictions, and per-domain reliability scores are then computed from the expert pool distributions (the ratio of turns where the SLM was correct vs where the LLM was correct for each domain). At inference time, when the user switches to a new domain whose SLM reliability score falls below the `reliability_threshold`, the KNN decision is overridden and the turn is escalated to the LLM. The threshold itself is calibrated offline using `calibrate_threshold.py`, which sweeps candidate values (0.3–0.8) on the holdout set and selects the one that overrides roughly 5–15% of turns for the best accuracy-cost trade-off (default: 0.40).
+CADRE is a retrieval-based routing system for Dialogue State Tracking (DST) on task-oriented dialogues, built on top of the [OrchestraLLM paper](https://arxiv.org/pdf/2311.09758). It uses a SenBERT bi-encoder to dynamically route each conversation turn to either a fine-tuned **SLM** (FLAN-T5-large) or an **LLM** (Gemini) via KNN majority vote over expert pools. On top of the base routing, CADRE adds **domain-aware routing** — the SLM is first evaluated on a holdout set to produce per-domain predictions, and per-domain reliability scores are then computed from the expert pool distributions (the ratio of turns where the SLM was correct vs where the LLM was correct for each domain). At inference time, when the user switches to a new domain whose SLM reliability score falls below the `reliability_threshold`, the KNN decision is overridden and the turn is escalated to the LLM. The threshold itself is calibrated offline using `calibrate_threshold.py`, which sweeps candidate values (0.3–0.8) on the holdout set and selects the one that overrides roughly 5–15% of turns for the best accuracy-cost trade-off (default: 0.40).
 
 ## How It Works
 
-At each dialogue turn, Morpheus:
+At each dialogue turn, CADRE:
 
 1. **Encodes** the current context — previous dialogue state, agent utterance, and user utterance — into a dense vector using a SenBERT bi-encoder.
 2. **Retrieves** the top-K nearest neighbours from pre-built SLM and LLM expert pools.
@@ -28,7 +28,7 @@ User Turn ──► SenBERT ──► KNN ├───────────�
 
 | Module | File | Description |
 |--------|------|-------------|
-| **Morpheus** | `morpheus.py` | Full pipeline orchestrator — loads all components and runs end-to-end evaluation or interactive inference. |
+| **CADRE** | `cadre.py` | Full pipeline orchestrator — loads all components and runs end-to-end evaluation or interactive inference. |
 | **Prompt-DST** | `prompt_dst.py` | Fine-tunes FLAN-T5-large on a small subset (5%) of MultiWOZ data to predict turn-level belief updates. |
 | **IC-DST** | `ic_dst.py` | Uses Gemini with K in-context exemplars for few-shot dialogue state tracking — no fine-tuning required. |
 | **Router** | `router.py` | SenBERT bi-encoder that retrieves nearest neighbours from expert pools and assigns turns via majority vote. Includes contrastive fine-tuning for improved routing. |
@@ -50,8 +50,8 @@ User Turn ──► SenBERT ──► KNN ├───────────�
 ### Local Setup
 
 ```bash
-git clone https://github.com/<your-username>/morpheus.git
-cd morpheus
+git clone https://github.com/<your-username>/cadre.git
+cd cadre
 pip install -r requirements.txt
 ```
 
@@ -72,21 +72,21 @@ python prompt_dst.py eval --config config.yaml --checkpoint ./models/prompt_dst/
 # 4. Build expert pools for the router
 python router.py build_pools --config config.yaml
 
-# 5. Run full Morpheus evaluation (requires Gemini API key)
+# 5. Run full CADRE evaluation (requires Gemini API key)
 export GEMINI_API_KEY="your-key"
-python morpheus.py eval --config config.yaml
+python cadre.py eval --config config.yaml
 
 # 6. Interactive single-turn inference
-python morpheus.py infer --config config.yaml
+python cadre.py infer --config config.yaml
 ```
 
 ## Project Structure
 
 ```
-morpheus/
+cadre/
 ├── config.yaml              # All hyperparameters and paths
 ├── requirements.txt         # Python >= 3.10 dependencies
-├── morpheus.py              # Full pipeline orchestrator
+├── cadre.py              # Full pipeline orchestrator
 ├── prompt_dst.py            # SLM expert — FLAN-T5-large fine-tuning & inference
 ├── ic_dst.py                # LLM expert — Gemini few-shot DST
 ├── router.py                # SenBERT retriever, expert pools, contrastive training

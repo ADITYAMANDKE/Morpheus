@@ -2,16 +2,17 @@
 prompt_dst.py
 ─────────────
 Prompt-DST: Fine-tuning and inference with FLAN-T5-large for Dialogue State
-Tracking, implementing equation (2) and (3) from the Morpheus paper.
+Tracking. This is the SLM expert of CADRE (Section 2.1).
 
     TLB_t = SLM(T, DST_{t-1}, A_{t-1}, U_t)
     max log P(TLB_t | T, DST_{t-1}, A_{t-1}, U_t)
 
-Key design choices vs. paper:
-  - FLAN-T5-large (770M) instead of T5-base (220M): better instruction following
-    and schema grounding, fits in ≤16GB GPU with bf16.
-  - Greedy decoding at inference (paper default).
-  - TLB aggregation with slot-value replacement per paper footnote 1.
+Key design choices (paper Section 2.1 / Appendix A):
+  - FLAN-T5-large (770M), bf16, fits in a 16GB T4 GPU.
+  - Fine-tuned on a 5% subset of MultiWOZ 2.4 train, effective batch 2x16=32,
+    up to 10 epochs, early stopping (patience 3) on eval TLB JGA.
+  - Greedy decoding at inference.
+  - TLB aggregation with slot-value replacement (later values overwrite earlier).
 
 Usage:
     # Fine-tune
@@ -124,7 +125,7 @@ def aggregate_tlbs(tlbs: list[dict[str, str]]) -> dict[str, str]:
     """
     Aggregates a sequence of Turn-Level Beliefs into a full dialogue state.
 
-    Per paper footnote 1: later values overwrite earlier ones for the same slot.
+    Later values overwrite earlier ones for the same slot.
     This matches how DST_{t} is built from TLB_{1..t}.
 
     Args:
@@ -210,7 +211,7 @@ class PromptDST:
         """
         Fine-tunes FLAN-T5 on the training set.
 
-        Training objective (eq. 3):
+        Training objective:
             max log P(TLB_t | T, DST_{t-1}, A_{t-1}, U_t)
 
         Implemented via cross-entropy loss on decoder output tokens
@@ -326,10 +327,7 @@ class PromptDST:
         """
         Runs greedy decoding for a single turn input string.
 
-        Implements the inference procedure from the paper:
-            "a greedy decoding procedure is directly applied, i.e., only the
-             most likely token in the given model vocabulary is predicted at
-             each decoding step."
+        Greedy decoding: only the most likely token is predicted at each step.
 
         Args:
             input_text: Formatted input string from format_input().

@@ -1,4 +1,4 @@
-# Morpheus Requirements
+# CADRE Requirements
 # Python >= 3.10
 
 # Core ML

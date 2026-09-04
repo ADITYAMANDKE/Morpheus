@@ -111,7 +111,7 @@ def compute_slot_f1(
     """
     Computes combined slot-value F1 score between two state dicts.
 
-    From Section 3.2 of the paper:
+    From OrchestraLLM (Lee et al., 2024) Section 3.2:
         Sim(TLB_a, TLB_b) = F1_slot_value + F1_slot - 1
 
     Where:
