@@ -50,10 +50,19 @@ ic_dst:
   num_exemplars: 10                    # K in-context examples (paper: 10)
   max_tokens: 512
   temperature: 0.0                     # Greedy equivalent for structured output
+  # Exemplar selection (paper Section 2.2 / 4.2):
+  #   "random"   — deployed CADRE default
+  #   "semantic" — SenBERT-retrieved top-K exemplars (Section 4.2, negative result)
+  exemplar_selection: "random"
+  exemplar_encoder: "sentence-transformers/all-mpnet-base-v2"
 
 # ─── Router (CADRE) ────────────────────────────────────────────────────────
 router:
-  retriever_backbone: "sentence-transformers/all-mpnet-base-v2"  # SenBERT
+  # Base routing decision (paper Section 2.3 / 4.1):
+  #   "knn" — non-parametric KNN majority vote over expert pools (deployed CADRE)
+  #   "mrl" — margin-ranked learned classifier head (Section 4.1, negative result)
+  router_type: "knn"
+  retriever_backbone: "sentence-transformers/all-mpnet-base-v2"  # SenBERT, off-the-shelf
   top_k: 10                            # Majority vote over K neighbours
   tie_break: "slm"                     # Prefer SLM on tie (paper setting)
 
@@ -61,7 +70,11 @@ router:
   slm_pool_size: 100                   # Turns per expert pool (MWOZ)
   llm_pool_size: 100
 
-  # Contrastive fine-tuning
+  # Contrastive fine-tuning of the retriever — NOT part of the CADRE paper.
+  # Inherited from OrchestraLLM; the paper uses the off-the-shelf encoder.
+  # Set use_fine_tuned_retriever: true to load ./data/expert_pools/retriever
+  # if you trained one with `python router.py train_retriever`.
+  use_fine_tuned_retriever: false
   supervision: "task+expert"           # "task" | "expert" | "task+expert" | "none"
   contrastive_pairs: 25                # l positive + l negative pairs
   contrastive_lr: 2.0e-5
@@ -69,9 +82,12 @@ router:
   contrastive_batch_size: 16
   contrastive_temperature: 0.07
 
-  # Domain-aware routing
+  # Domain-aware routing (paper Section 2.4 / 2.5)
   domain_aware: true                   # Enable domain-switch override
-  reliability_threshold: 0.40           # Min SLM reliability to trust; calibrate on holdout
+  reliability_threshold: 0.40          # τ — min SLM reliability to trust; calibrated on holdout
+  calibration:
+    thresholds: [0.30, 0.40, 0.50, 0.60, 0.70, 0.80]
+    override_rate_band: [0.05, 0.15]   # pick the smallest τ whose override rate is in this band
   domain_keywords:
     hotel: ["hotel", "room", "stay", "accommodation", "lodge", "inn", "guesthouse"]
     restaurant: ["restaurant", "food", "eat", "dining", "cuisine", "meal", "lunch", "dinner"]
@@ -80,9 +96,28 @@ router:
     taxi: ["taxi", "cab", "ride", "pick up", "pickup", "drop off"]
     hospital: ["hospital", "department"]
 
-# ─── Evaluation ───────────────────────────────────────────────────────────────
+# ─── Margin-ranked learned router (paper Section 4.1, negative result) ────────
+mrl_router:
+  hidden_dim: 128
+  learning_rate: 2.0e-5
+  batch_size: 16
+  warmup_epochs: 2                     # head-only, encoder frozen
+  e2e_epochs: 3                        # encoder + head
+  decision_threshold: 0.5              # route to LLM iff P(LLM) >= 0.5
+
+# ─── Evaluation (paper Section 3.1) ───────────────────────────────────────────
 evaluation:
   metrics:
-    - "joint_goal_accuracy"            # DST JGA (accumulated states)
     - "tlb_jga"                        # Turn-Level Belief JGA
-  report_flops: true
+    - "joint_goal_accuracy"            # DST JGA (accumulated states)
+    - "slot_f1"                        # average slot-value F1
+    - "per_domain_tlb_jga"
+    - "routing_share"                  # % turns routed to SLM / LLM
+    - "domain_override_rate"
+    - "wall_clock"
+  # Evaluation slices used in the paper (val set, dialogue order, whole dialogues):
+  #   headline  — 204-turn slice (Tables 1-3, Figures 2-3)
+  #   wide      — 736-turn slice (per-domain trends, Section 3.3)
+  slices:
+    headline: 204
+    wide: 736

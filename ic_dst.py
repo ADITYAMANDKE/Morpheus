@@ -14,9 +14,17 @@ Where:
     U_t       = Current user utterance
 
 Key differences from Prompt-DST:
-    - No fine-tuning: the LLM is used zero/few-shot
+    - No fine-tuning: the LLM is used few-shot
     - K exemplars are included in the prompt for in-context learning
-    - Exemplars are retrieved from a small labelled set (similar to IC-DST paper)
+
+Exemplar selection (config `ic_dst.exemplar_selection`):
+    - "random"   : K exemplars sampled uniformly from the training set
+                   (deployed CADRE default, paper Section 2.2)
+    - "semantic" : the SenBERT bi-encoder pre-indexes all candidate exemplars and,
+                   at inference time, the K most similar exemplars to the query
+                   triplet are retrieved, excluding the source dialogue
+                   (paper Section 4.2 — negative result; matches the original
+                   IC-DST recipe of Hu et al., 2022)
 
 Usage:
     python ic_dst.py eval --config config.yaml
@@ -64,33 +72,103 @@ class ExemplarPool:
     """
     Manages the pool of in-context exemplars for IC-DST.
 
-    In the paper, exemplars are turn-level (agent_utt, user_utt) → TLB pairs
-    sampled from the training set. For simplicity we use random sampling here;
-    the router module handles semantic retrieval for CADRE.
+    Exemplars are turn-level (DST_{t-1}, A_{t-1}, U_t) → TLB pairs drawn from
+    the training set. Two selection strategies are supported:
+
+        - "random"   : uniform sampling (paper Section 2.2, deployed default)
+        - "semantic" : SenBERT nearest-neighbour retrieval over the triplet
+                       encoding (paper Section 4.2, negative result)
     """
 
-    def __init__(self, examples: list[dict], seed: int = 42):
+    def __init__(
+        self,
+        examples: list[dict],
+        selection: str = "random",
+        encoder_name: str = "sentence-transformers/all-mpnet-base-v2",
+        seed: int = 42,
+    ):
+        assert selection in ("random", "semantic"), selection
         # Only keep turns with non-empty TLBs as exemplars (more informative)
         self.pool = [ex for ex in examples if ex.get("tlb")]
+        self.selection = selection
         self.rng = random.Random(seed)
-        print(f"[ExemplarPool] {len(self.pool)} exemplars available (non-empty TLB turns)")
+        self.encoder = None
+        self.embeddings = None
+        print(f"[ExemplarPool] {len(self.pool)} exemplars available "
+              f"(non-empty TLB turns) | selection={selection}")
 
-    def sample(self, k: int, exclude_id: Optional[str] = None) -> list[dict]:
+        if selection == "semantic":
+            self._index(encoder_name)
+
+    def _index(self, encoder_name: str):
+        """Pre-embeds every candidate exemplar with the SenBERT bi-encoder (once)."""
+        from sentence_transformers import SentenceTransformer
+        from router import encode_triplet
+
+        self.encoder = SentenceTransformer(encoder_name)
+        texts = [
+            encode_triplet(ex.get("prev_dst", {}), ex.get("agent_utt", ""), ex.get("user_utt", ""))
+            for ex in self.pool
+        ]
+        print(f"[ExemplarPool] Indexing {len(texts)} exemplars with {encoder_name}...")
+        self.embeddings = self.encoder.encode(
+            texts, convert_to_tensor=True, normalize_embeddings=True, show_progress_bar=False
+        )
+        print("[ExemplarPool] Indexing complete.")
+
+    def sample(
+        self,
+        k: int,
+        exclude_id: Optional[str] = None,
+        query: Optional[tuple[dict, str, str]] = None,
+    ) -> list[dict]:
         """
-        Randomly samples K exemplars, optionally excluding a specific dialogue.
+        Selects K exemplars, optionally excluding a specific dialogue.
 
         Args:
-            k          : Number of exemplars to sample.
-            exclude_id : Dialogue ID to exclude (avoid leaking test dialogue).
+            k          : Number of exemplars.
+            exclude_id : Dialogue ID to exclude (avoid leaking the test dialogue).
+            query      : (prev_dst, agent_utt, user_utt) of the current turn.
+                         Required for semantic selection; ignored for random.
 
         Returns:
             List of K exemplar dicts.
         """
+        if self.selection == "semantic":
+            assert query is not None, "semantic selection needs the query triplet"
+            return self._retrieve(k, exclude_id, *query)
+
         pool = self.pool
         if exclude_id:
             pool = [ex for ex in pool if ex["dialogue_id"] != exclude_id]
         k = min(k, len(pool))
         return self.rng.sample(pool, k)
+
+    def _retrieve(
+        self,
+        k: int,
+        exclude_id: Optional[str],
+        prev_dst: dict[str, str],
+        agent_utt: str,
+        user_utt: str,
+    ) -> list[dict]:
+        """Top-K cosine-similar exemplars to the query triplet (Section 4.2)."""
+        import torch
+        from router import encode_triplet
+
+        q = self.encoder.encode(
+            [encode_triplet(prev_dst, agent_utt, user_utt)],
+            convert_to_tensor=True, normalize_embeddings=True, show_progress_bar=False,
+        )
+        scores = (q @ self.embeddings.T).squeeze(0)  # cosine (unit vectors)
+        if exclude_id:
+            mask = torch.tensor(
+                [ex["dialogue_id"] == exclude_id for ex in self.pool], device=scores.device
+            )
+            scores = scores.masked_fill(mask, float("-inf"))
+        k = min(k, len(self.pool))
+        top = torch.topk(scores, k).indices.tolist()
+        return [self.pool[i] for i in top]
 
     def format_exemplars(self, exemplars: list[dict]) -> str:
         """
@@ -180,18 +258,26 @@ class ICDST:
         self.num_exemplars = self.llm_cfg.get("num_exemplars", 10)
         self.max_tokens = self.llm_cfg.get("max_tokens", 512)
         self.temperature = self.llm_cfg.get("temperature", 0.0)
+        self.exemplar_selection = self.llm_cfg.get("exemplar_selection", "random")
+        self.exemplar_encoder = self.llm_cfg.get(
+            "exemplar_encoder", "sentence-transformers/all-mpnet-base-v2"
+        )
 
         api_key = os.environ.get("GEMINI_API_KEY", "")
         self.client = genai.Client(api_key=api_key)
         self.exemplar_pool: Optional[ExemplarPool] = None
         self.system_instruction = SYSTEM_INSTRUCTION
 
-        print(f"[IC-DST] Model: {self.model} | K={self.num_exemplars} exemplars")
+        print(f"[IC-DST] Model: {self.model} | K={self.num_exemplars} exemplars "
+              f"| selection={self.exemplar_selection}")
 
     def load_exemplar_pool(self, examples: list[dict]):
-        """Initialises the exemplar pool from training/holdout examples."""
-        self.exemplar_pool = ExemplarPool(examples)
-
+        """Initialises the exemplar pool from training examples."""
+        self.exemplar_pool = ExemplarPool(
+            examples,
+            selection=self.exemplar_selection,
+            encoder_name=self.exemplar_encoder,
+        )
 
 
     def _call_llm(self, prompt: str, retries: int = 3) -> str:
@@ -240,8 +326,8 @@ class ICDST:
         """
         Predicts the TLB for a single dialogue turn.
 
-        Samples fresh random exemplars for each turn and builds the full
-        prompt including schema + exemplars.
+        Selects K exemplars for this turn (random or semantic, per config) and
+        builds the full prompt including schema + exemplars.
 
         Args:
             prev_dst    : Previous accumulated dialogue state.
@@ -253,7 +339,11 @@ class ICDST:
             Tuple of (raw_llm_output, parsed_tlb_string).
         """
         assert self.exemplar_pool, "Call load_exemplar_pool() first"
-        exemplars = self.exemplar_pool.sample(self.num_exemplars, exclude_id=dialogue_id)
+        exemplars = self.exemplar_pool.sample(
+            self.num_exemplars,
+            exclude_id=dialogue_id,
+            query=(prev_dst, agent_utt, user_utt),
+        )
         exemplars_block = self.exemplar_pool.format_exemplars(exemplars)
         prompt = build_ic_prompt(prev_dst, agent_utt, user_utt, exemplars_block)
 
@@ -368,12 +458,16 @@ def main():
     parser.add_argument("--config", default="./config.yaml")
     parser.add_argument("--max_dialogues", type=int, default=None,
                         help="Limit eval to N dialogues (cost control)")
+    parser.add_argument("--exemplar_selection", choices=["random", "semantic"], default=None,
+                        help="Override config ic_dst.exemplar_selection")
     parser.add_argument("--agent_utt", default="")
     parser.add_argument("--user_utt",  default="")
     parser.add_argument("--prev_dst",  default="")
     args = parser.parse_args()
 
     config = load_config(args.config)
+    if args.exemplar_selection:
+        config.setdefault("ic_dst", {})["exemplar_selection"] = args.exemplar_selection
     paths  = config.get("paths", {})
     proc_dir = Path(paths.get("processed_dir", "./data/processed"))
 
