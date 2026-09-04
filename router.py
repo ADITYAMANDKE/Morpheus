@@ -52,7 +52,7 @@ from data_preprocessing import (
     string_to_state,
     state_to_string,
 )
-from evaluate import compute_slot_f1
+from evaluate import compute_slot_similarity
 
 
 # ─── Triplet Encoder ──────────────────────────────────────────────────────────
@@ -183,8 +183,8 @@ def compute_instance_similarity(ex_a: dict, ex_b: dict) -> float:
     dst_a = ex_a.get("prev_dst", {})
     dst_b = ex_b.get("prev_dst", {})
 
-    sim_tlb = compute_slot_f1(tlb_a, tlb_b)
-    sim_dst = compute_slot_f1(dst_a, dst_b)
+    sim_tlb = compute_slot_similarity(tlb_a, tlb_b)
+    sim_dst = compute_slot_similarity(dst_a, dst_b)
     return 0.5 * sim_dst + 0.5 * sim_tlb
 
 

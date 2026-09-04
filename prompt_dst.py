@@ -419,8 +419,9 @@ class PromptDST:
             - TLB JGA : Turn-level belief accuracy (new/changed slots only)
             - DST JGA : Joint goal accuracy on accumulated states
 
-        Note: For DST JGA, we need full dialogue context; here we evaluate
-        turn-level DST JGA using gold prev_dst (upper bound for turn isolation).
+        Turns are grouped by dialogue and the previous state fed to the model is
+        the model's own accumulated prediction (not gold), so DST JGA reflects
+        real cascading behaviour, as in the paper.
 
         Args:
             examples  : List of turn examples from load_jsonl().

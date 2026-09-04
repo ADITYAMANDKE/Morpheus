@@ -3,10 +3,15 @@ evaluate.py
 ───────────
 Evaluation metrics for Dialogue State Tracking.
 
-Implements:
-    - Joint Goal Accuracy (JGA) on accumulated dialogue states (DST JGA)
-    - Turn-Level Belief JGA (TLB JGA) — per-turn accuracy on changes only
-    - Slot-value F1 — used internally for contrastive pair construction
+Implements the metrics of the CADRE paper (Section 3.1):
+    - TLB JGA  — Turn-Level Belief JGA: a turn is correct only if ALL predicted
+                 slot updates match gold
+    - DST JGA  — Joint Goal Accuracy on the accumulated state at every turn
+    - Slot F1  — average per-turn slot-value F1 over the TLB
+    - Per-domain TLB JGA (Table 2)
+
+Also provides the OrchestraLLM slot similarity (F1_slot_value + F1_slot - 1),
+used only for optional contrastive retriever fine-tuning.
 
 References:
     - JGA: Henderson et al. (2014) — "The Second Dialog State Tracking Challenge"
@@ -109,7 +114,25 @@ def compute_slot_f1(
     gold: dict[str, str],
 ) -> float:
     """
-    Computes combined slot-value F1 score between two state dicts.
+    Standard slot-value F1 between a predicted and a gold TLB (paper: "average
+    slot F1", Table 1). A (slot, value) pair counts as a hit only if both the
+    slot name and the (case-insensitive) value match.
+
+    Returns 1.0 when both are empty (a correctly predicted "[none]" turn).
+    """
+    if not pred and not gold:
+        return 1.0
+    pred_sv = set(f"{k}={v.strip().lower()}" for k, v in pred.items())
+    gold_sv = set(f"{k}={v.strip().lower()}" for k, v in gold.items())
+    return _f1(pred_sv, gold_sv)
+
+
+def compute_slot_similarity(
+    pred: dict[str, str],
+    gold: dict[str, str],
+) -> float:
+    """
+    Combined slot-value similarity between two state dicts.
 
     From OrchestraLLM (Lee et al., 2024) Section 3.2:
         Sim(TLB_a, TLB_b) = F1_slot_value + F1_slot - 1
@@ -188,11 +211,12 @@ def evaluate_predictions(
     dst_correct = [states_match(p, g) for p, g in zip(pred_dsts, gold_dsts)]
     dst_jga = sum(dst_correct) / n if n else 0.0
 
-    # Slot F1 (average over turns)
+    # Average slot-value F1 over turns (Table 1, "Slot F1")
     slot_f1_scores = [compute_slot_f1(p, g) for p, g in zip(pred_tlbs, gold_tlbs)]
     avg_slot_f1 = sum(slot_f1_scores) / n if n else 0.0
 
-    # Per-domain TLB accuracy
+    # Per-domain TLB JGA (Table 2): a turn counts toward every domain that
+    # appears in either its predicted or its gold TLB.
     domain_correct: dict[str, list[bool]] = {}
     for pred_tlb, gold_tlb, correct in zip(pred_tlbs, gold_tlbs, tlb_correct):
         domains = set()
@@ -220,7 +244,8 @@ def evaluate_predictions(
         "dst_jga": round(dst_jga * 100, 2),
         "avg_slot_f1": round(avg_slot_f1 * 100, 2),
         "n_turns": n,
-        "per_domain_tlb_accuracy": domain_accuracy,
+        "per_domain_tlb_jga": domain_accuracy,
+        "per_domain_tlb_accuracy": domain_accuracy,  # backward-compatible alias
     }
 
     print(f"\n{'='*50}")
@@ -228,7 +253,7 @@ def evaluate_predictions(
     print(f"  DST JGA  : {results['dst_jga']:.2f}%")
     print(f"  Slot F1  : {results['avg_slot_f1']:.2f}%")
     print(f"  N turns  : {n}")
-    print(f"\n  Per-domain TLB accuracy:")
+    print(f"\n  Per-domain TLB JGA:")
     for domain, acc in sorted(domain_accuracy.items(), key=lambda x: -x[1]):
         print(f"    {domain:<15}: {acc:.2f}%")
     print(f"{'='*50}\n")
